@@ -1,7 +1,8 @@
 # Perfis de navegador (dados locais da VISU)
 profile_visu/
 
-.git
+.git/
+.vscode/
 
 # Logs
 *.log
