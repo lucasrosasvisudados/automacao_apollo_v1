@@ -290,7 +290,6 @@ def extrair_sequences_analytics(
                 f'      Seletor: {XPATH_EXPORT_CSV}\n'
                 '      Verifique se o menu abriu corretamente.'
             )
-            driver.save_screenshot("erro_export_csv.png")
             return None
 
         # ── PASSO 4: Aguarda o download completar ─────────────────────────
