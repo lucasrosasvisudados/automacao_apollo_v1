@@ -51,6 +51,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 from common.common_browser import iniciar_chrome_driver
+from common.common_setup import verificar_e_configurar, CAMINHO_PERFIL_VISU
 
 # -------------------------------------------------------------------------
 # Configuração de logging
@@ -111,22 +112,10 @@ def verificar_sessao_ativa(driver) -> bool:
     return True
 
 
-def clicar_elemento_com_enter(
-    driver,
-    wait,
-    seletor: str,
-    tipo: str,
-    n_enters: int = 1,
-    descricao: str = ""
-) -> bool:
+def clicar_elemento_com_enter(driver, wait, seletor: str, tipo: str, n_enters: int = 1, descricao: str = "") -> bool:
     """
-    Localiza um elemento na página (CSS ou XPath) e pressiona ENTER N vezes.
-
-    CORREÇÃO: removido o elemento.click() que precedia o send_keys(RETURN).
-    O click() já disparava a ação antes do ENTER, causando duplo acionamento
-    no botão "More Actions Menu" (fechava o menu que acabava de abrir) e
-    comportamento imprevisível no "Export to CSV".
-    Agora o fluxo é: focar via JavaScript → pressionar ENTER N vezes.
+    Localiza um elemento na página (CSS ou XPath), foca nele e pressiona
+    ENTER N vezes.
 
     Parâmetros
     ----------
@@ -156,16 +145,12 @@ def clicar_elemento_com_enter(
         driver.save_screenshot(f"erro_{nome.replace(' ', '_').lower()}.png")
         return False
 
-    # CORREÇÃO: foca o elemento via JS em vez de click() para não disparar
-    # a ação duas vezes. Em SPAs como o Apollo, click() + RETURN equivale
-    # a dois cliques, o que fecha um menu recém-aberto ou dispara dois
-    # eventos de submit.
-    driver.execute_script("arguments[0].focus();", elemento)
-
+    # Foca o elemento e pressiona ENTER N vezes
+    elemento.click()
     for i in range(n_enters):
         elemento.send_keys(Keys.RETURN)
         log.info(f"  → ENTER [{i+1}/{n_enters}] em: {nome}")
-        time.sleep(0.5)   # leve pausa entre ENTERs consecutivos
+        time.sleep(0.3)
 
     return True
 
@@ -201,6 +186,7 @@ def aguardar_download_concluir(
     return None
 
 
+# Navega o browser para a página de Sequences Analytics do Apollo e aguarda o carregamento completo do SPA.
 def navegar_para_sequences_analytics(driver, wait) -> bool:
     """
     Acessa https://app.apollo.io/#/sequences/analytics e aguarda a renderização
@@ -210,12 +196,6 @@ def navegar_para_sequences_analytics(driver, wait) -> bool:
     componentes estarem visíveis. A estratégia aqui é aguardar o botão
     "More Actions Menu" ficar presente no DOM — isso garante que a página
     de Analytics carregou de facto, não apenas que a URL está correta.
-
-    CORREÇÃO: adicionado time.sleep(3) após driver.get() para dar tempo ao
-    Chrome de carregar as extensões e cookies do perfil VISU antes de
-    verificar a URL. Sem essa pausa, o readyState retorna "complete" para
-    a página em branco inicial, antes do redirecionamento do SPA acontecer,
-    e verificar_sessao_ativa() lê a URL errada.
 
     Parâmetros
     ----------
@@ -228,14 +208,6 @@ def navegar_para_sequences_analytics(driver, wait) -> bool:
     """
     log.info("[1/4] Navegando para Sequences Analytics...")
     driver.get(URL_SEQUENCES_ANALYTICS)
-
-    # CORREÇÃO: pausa explícita para o perfil e o SPA inicializarem.
-    # O Chrome precisa de alguns segundos para restaurar cookies e a sessão
-    # do perfil antes que qualquer verificação de URL faça sentido.
-    # Sem isso, driver.current_url pode retornar "data:," ou a URL de login
-    # mesmo com o perfil correto.
-    log.info("[1/4] Aguardando inicialização do perfil e do SPA...")
-    time.sleep(3)
 
     # Aguarda o DOM sinalizar carregamento completo
     wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
@@ -260,8 +232,7 @@ def navegar_para_sequences_analytics(driver, wait) -> bool:
             "      Possíveis causas:\n"
             "        • Sessão expirada — faça login manual com o perfil VISU\n"
             "        • Apollo mudou o seletor do botão\n"
-            "        • Conexão lenta — aumente TIMEOUT_ELEMENTO\n"
-            "        • Chrome com perfil VISU já estava aberto (feche-o antes)"
+            "        • Conexão lenta — aumente TIMEOUT em run_apollo_extractor.py"
         )
         driver.save_screenshot("erro_navegacao.png")
         return False
@@ -296,12 +267,6 @@ def extrair_sequences_analytics(
     -------
     str | None
         Caminho completo do arquivo CSV baixado, ou None em caso de erro.
-
-    NOTA IMPORTANTE — perfil em uso:
-        Antes de executar, certifique-se de que NENHUMA janela do Chrome
-        com o perfil VISU está aberta. O ChromeDriver não consegue assumir
-        um perfil que já está em uso por outra instância do Chrome e inicia
-        uma sessão em branco, sem cookies e sem autenticação.
     """
     pasta = download_dir or str(Path.home() / "Downloads")
 
@@ -312,6 +277,13 @@ def extrair_sequences_analytics(
     log.info(f"  Download: {pasta}")
     log.info(f"  Headless: {headless}")
     log.info("=" * 60)
+
+    # ── PASSO 0: Verificar perfil Chrome e sessão Apollo ──────────────────
+    # Garante que o perfil existe e tem sessão ativa antes de qualquer ação.
+    # Em máquinas novas ou sessões expiradas, guia o login manual automaticamente.
+    if not verificar_e_configurar(CAMINHO_PERFIL_VISU):
+        log.error("[EXTRACT] Ambiente não configurado. Extração cancelada.")
+        return None
 
     # ── Inicia o Chrome com o perfil VISU ─────────────────────────────────
     driver = iniciar_chrome_driver(
@@ -327,7 +299,8 @@ def extrair_sequences_analytics(
             return None
 
         # ── PASSO 2: Elemento 1 — botão "More Actions Menu" ───────────────
-        # Foca o elemento via JS e pressiona ENTER 1x para abrir o menu.
+        # Localiza pelo aria-label, clica para focar e pressiona ENTER 1x
+        # para abrir o menu de ações.
         log.info('[2/4] Acionando botão "More Actions Menu"...')
         sucesso = clicar_elemento_com_enter(
             driver=driver,
@@ -346,26 +319,18 @@ def extrair_sequences_analytics(
         time.sleep(1)
 
         # ── PASSO 3: Elemento 2 — opção "Export to CSV" ───────────────────
-        # Para links <a> no Apollo, click() é mais confiável que focus()+ENTER
-        # para abrir o diálogo. Os dois send_keys(RETURN) confirmam a exportação.
+        # Localiza o link pelo XPath (texto do span interno), pressiona
+        # ENTER 2 vezes para confirmar a exportação.
         log.info('[3/4] Acionando "Export to CSV"...')
-        try:
-            btn_export = wait.until(
-                EC.element_to_be_clickable((By.XPATH, XPATH_EXPORT_CSV))
-            )
-            btn_export.click()
-            time.sleep(0.5)
-            btn_export.send_keys(Keys.RETURN)
-            time.sleep(0.5)
-            btn_export.send_keys(Keys.RETURN)
-            log.info('[3/4] ✅ Exportação acionada.')
-        except TimeoutException:
-            log.error(
-                '[3/4] ❌ Elemento "Export to CSV" não encontrado.\n'
-                f'      Seletor: {XPATH_EXPORT_CSV}\n'
-                '      Verifique se o menu abriu corretamente.'
-            )
-            driver.save_screenshot("erro_export_csv.png")
+        sucesso = clicar_elemento_com_enter(
+            driver=driver,
+            wait=wait,
+            seletor=XPATH_EXPORT_CSV,
+            tipo="xpath",
+            n_enters=2,
+            descricao="Export to CSV"
+        )
+        if not sucesso:
             return None
 
         log.info('[3/4] ✅ Exportação acionada.')
