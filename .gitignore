@@ -1,7 +1,7 @@
 # Perfis de navegador (dados locais da VISU)
 profile_visu/
 
-.git/
+# Configurações do Visual Studio Code
 .vscode/
 
 # Logs
