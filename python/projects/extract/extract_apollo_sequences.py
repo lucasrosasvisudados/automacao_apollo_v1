@@ -11,22 +11,24 @@ necessidade de armazenar credenciais em arquivos de configuração.
 Fluxo de execução:
 ------------------
 1. Abre o Chrome com o perfil VISU (já autenticado no Apollo)
-2. Navega diretamente para https://app.apollo.io/#/sequences/analytics
-3. Localiza o botão "More Actions Menu" via CSS e pressiona ENTER
-4. Localiza o link "Export to CSV" no menu e pressiona ENTER duas vezes
-5. Aguarda o download ser concluído na pasta configurada
+2. verificar_e_configurar() confirma sessão ativa — ou guia login automático
+3. Navega diretamente para https://app.apollo.io/#/sequences/analytics
+4. Localiza o botão "More Actions Menu" via CSS e pressiona ENTER
+5. Localiza o link "Export to CSV" no menu e aciona o download
+6. Aguarda o download ser concluído na pasta configurada
 
 Autenticação:
 -------------
 Nenhuma credencial é armazenada neste módulo. O login é mantido
 pelo perfil Chrome em /projects/chrome_profiles/profile_visu.
-Para registrar ou renovar a sessão, abra o Chrome com esse perfil,
-faça login manualmente no Apollo e execute este script novamente.
+Se a sessão expirar, o script abre a tela de login do Apollo e aguarda
+o login manual automaticamente — sem necessidade de teclar ENTER.
 
 Dependências:
 -------------
 - selenium (Selenium Manager cuida do chromedriver automaticamente)
 - common_browser (módulo interno VISU)
+- common_setup  (módulo interno VISU)
 - perfil logado em: /projects/chrome_profiles/profile_visu
 """
 
@@ -50,8 +52,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
-from common.common_browser import iniciar_chrome_driver
-from common.common_setup import verificar_e_configurar, CAMINHO_PERFIL_VISU
+from common.common_browser import iniciar_chrome_driver, CAMINHO_PERFIL_VISU
+from common.common_setup import verificar_e_configurar
 
 # -------------------------------------------------------------------------
 # Configuração de logging
@@ -75,13 +77,10 @@ URL_SEQUENCES_ANALYTICS = "https://app.apollo.io/#/sequences/analytics"
 #
 # Elemento 1 — Botão "More Actions Menu":
 #   <button aria-label="More Actions Menu" ...>
-#   aria-label é o seletor mais estável — não depende de classes CSS
-#   que mudam a cada deploy do Apollo.
 SELECTOR_BTN_MORE_ACTIONS = 'button[aria-label="More Actions Menu"]'
 
 # Elemento 2 — Link "Export to CSV" no menu:
 #   <a role="button" ...><span ...>Export to CSV</span></a>
-#   XPath busca o <a> que contém um span com o texto exato.
 XPATH_EXPORT_CSV = '//a[.//span[contains(text(), "Export to CSV")]]'
 
 # Tempo máximo de espera por elementos na página (segundos)
@@ -94,41 +93,21 @@ TIMEOUT_DOWNLOAD = 60
 # -------------------------------------------------------------------------
 # Funções auxiliares
 # -------------------------------------------------------------------------
-def verificar_sessao_ativa(driver) -> bool:
+def clicar_elemento_com_enter(
+    driver,
+    wait,
+    seletor: str,
+    tipo: str,
+    n_enters: int = 1,
+    descricao: str = ""
+) -> bool:
     """
-    Verifica se o perfil ainda tem sessão ativa no Apollo.
-    Se a URL contiver 'login', a sessão expirou — fazer login manualmente
-    com o perfil VISU no Chrome e executar novamente.
-    """
-    url_atual = driver.current_url
-    if "login" in url_atual:
-        log.error(
-            "[SESSÃO] Sessão expirada ou perfil não autenticado.\n"
-            "         Abra o Chrome com o perfil VISU, faça login no Apollo\n"
-            "         manualmente e execute o script novamente."
-        )
-        return False
-    log.info(f"[SESSÃO] Sessão ativa. URL atual: {url_atual}")
-    return True
+    Localiza um elemento na página (CSS ou XPath), foca nele via JS
+    e pressiona ENTER N vezes.
 
-
-def clicar_elemento_com_enter(driver, wait, seletor: str, tipo: str, n_enters: int = 1, descricao: str = "") -> bool:
-    """
-    Localiza um elemento na página (CSS ou XPath), foca nele e pressiona
-    ENTER N vezes.
-
-    Parâmetros
-    ----------
-    driver      : WebDriver
-    wait        : WebDriverWait configurado
-    seletor     : str — seletor CSS ou XPath do elemento
-    tipo        : str — "css" ou "xpath"
-    n_enters    : int — quantas vezes pressionar ENTER (padrão: 1)
-    descricao   : str — nome legível do elemento para logs
-
-    Retorna
-    -------
-    bool — True se encontrou e acionou, False se timeout
+    Usar focus() via JS em vez de click() evita duplo disparo em SPAs:
+    click() já aciona o elemento, e o ENTER subsequente repetiria a ação
+    (ex: abrir e fechar o menu imediatamente).
     """
     by = By.CSS_SELECTOR if tipo == "css" else By.XPATH
     nome = descricao or seletor
@@ -145,12 +124,12 @@ def clicar_elemento_com_enter(driver, wait, seletor: str, tipo: str, n_enters: i
         driver.save_screenshot(f"erro_{nome.replace(' ', '_').lower()}.png")
         return False
 
-    # Foca o elemento e pressiona ENTER N vezes
-    elemento.click()
+    # Foca via JS (sem disparar click) e pressiona ENTER N vezes
+    driver.execute_script("arguments[0].focus();", elemento)
     for i in range(n_enters):
         elemento.send_keys(Keys.RETURN)
         log.info(f"  → ENTER [{i+1}/{n_enters}] em: {nome}")
-        time.sleep(0.3)
+        time.sleep(0.5)
 
     return True
 
@@ -163,8 +142,6 @@ def aguardar_download_concluir(
     """
     Aguarda até que um novo arquivo CSV apareça na pasta de download.
     Ignora arquivos .crdownload (download ainda em progresso no Chrome).
-
-    Retorna o caminho do arquivo baixado, ou None se timeout atingido.
     """
     log.info(f"[DOWNLOAD] Aguardando arquivo {extensao} em: {pasta_download}")
     inicio = time.time()
@@ -176,7 +153,6 @@ def aguardar_download_concluir(
         ]
         if arquivos:
             mais_recente = max(arquivos, key=os.path.getctime)
-            # Confirma que o arquivo foi criado após o início desta execução
             if os.path.getctime(mais_recente) >= inicio:
                 log.info(f"[DOWNLOAD] ✅ Arquivo recebido: {mais_recente}")
                 return mais_recente
@@ -186,40 +162,14 @@ def aguardar_download_concluir(
     return None
 
 
-# Navega o browser para a página de Sequences Analytics do Apollo e aguarda o carregamento completo do SPA.
-def navegar_para_sequences_analytics(driver, wait) -> bool:
+def aguardar_pagina_analytics(driver, wait) -> bool:
     """
-    Acessa https://app.apollo.io/#/sequences/analytics e aguarda a renderização
-    completa da página antes de prosseguir.
+    Aguarda a renderização completa da página de Sequences Analytics.
 
-    O Apollo usa React (SPA): o DOM pode reportar "complete" antes dos
-    componentes estarem visíveis. A estratégia aqui é aguardar o botão
-    "More Actions Menu" ficar presente no DOM — isso garante que a página
-    de Analytics carregou de facto, não apenas que a URL está correta.
-
-    Parâmetros
-    ----------
-    driver : WebDriver
-    wait   : WebDriverWait configurado com o timeout desejado
-
-    Retorna
-    -------
-    bool — True se a página carregou e a sessão está ativa, False caso contrário
+    verificar_e_configurar() já navegou para URL_SEQUENCES_ANALYTICS.
+    Esta função apenas confirma que o SPA terminou de renderizar,
+    esperando o botão "More Actions Menu" aparecer no DOM.
     """
-    log.info("[1/4] Navegando para Sequences Analytics...")
-    driver.get(URL_SEQUENCES_ANALYTICS)
-
-    # Aguarda o DOM sinalizar carregamento completo
-    wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
-
-    # Confirma que não fomos redirecionados para a tela de login
-    if not verificar_sessao_ativa(driver):
-        return False
-
-    # Aguarda o botão "More Actions Menu" aparecer no DOM.
-    # Esse é o indicador mais confiável de que a página de Analytics
-    # terminou de renderizar — enquanto ele não existir, a página ainda
-    # está carregando dados e os cliques seguintes falhariam.
     log.info("[1/4] Aguardando renderização completa da página de Analytics...")
     try:
         wait.until(EC.presence_of_element_located(
@@ -230,9 +180,9 @@ def navegar_para_sequences_analytics(driver, wait) -> bool:
             "[1/4] ❌ Timeout aguardando a página de Analytics renderizar.\n"
             "      O botão 'More Actions Menu' não apareceu dentro do tempo limite.\n"
             "      Possíveis causas:\n"
-            "        • Sessão expirada — faça login manual com o perfil VISU\n"
+            "        • Sessão expirada — execute novamente para refazer login\n"
             "        • Apollo mudou o seletor do botão\n"
-            "        • Conexão lenta — aumente TIMEOUT em run_apollo_extractor.py"
+            "        • Conexão lenta — aumente TIMEOUT_ELEMENTO"
         )
         driver.save_screenshot("erro_navegacao.png")
         return False
@@ -258,8 +208,8 @@ def extrair_sequences_analytics(
         Caminho absoluto da pasta onde o CSV será salvo.
         Se None, usa a pasta Downloads padrão do Windows.
     headless : bool, opcional
-        Define se o Chrome será executado sem interface gráfica.
-        Recomendado False na primeira execução para validar o fluxo.
+        Se True, Chrome roda sem interface gráfica.
+        Use False na primeira execução para o login manual ser visível.
     timeout : int, opcional
         Tempo máximo (segundos) para aguardar cada elemento na página.
 
@@ -278,14 +228,10 @@ def extrair_sequences_analytics(
     log.info(f"  Headless: {headless}")
     log.info("=" * 60)
 
-    # ── PASSO 0: Verificar perfil Chrome e sessão Apollo ──────────────────
-    # Garante que o perfil existe e tem sessão ativa antes de qualquer ação.
-    # Em máquinas novas ou sessões expiradas, guia o login manual automaticamente.
-    if not verificar_e_configurar(CAMINHO_PERFIL_VISU):
-        log.error("[EXTRACT] Ambiente não configurado. Extração cancelada.")
-        return None
-
     # ── Inicia o Chrome com o perfil VISU ─────────────────────────────────
+    # O driver é iniciado ANTES de verificar_e_configurar para evitar
+    # abertura dupla do Chrome. A função de setup recebe o driver já aberto
+    # e opera dentro dele — sem abrir uma segunda instância.
     driver = iniciar_chrome_driver(
         headless=headless,
         usar_perfil_visu=True,
@@ -293,14 +239,22 @@ def extrair_sequences_analytics(
     )
 
     try:
-        # ── PASSO 1: Navega para Sequences Analytics ───────────────────────
         wait = WebDriverWait(driver, timeout)
-        if not navegar_para_sequences_analytics(driver, wait):
+
+        # ── PASSO 0: Verificar sessão e navegar para Analytics ────────────
+        # verificar_e_configurar() checa a sessão no driver já aberto e,
+        # ao final (sessão ok ou login renovado), navega para URL_SEQUENCES_ANALYTICS.
+        # Se retornar False, a extração é cancelada.
+        log.info("[0/4] Verificando sessão e navegando para Analytics...")
+        if not verificar_e_configurar(driver, CAMINHO_PERFIL_VISU, URL_SEQUENCES_ANALYTICS):
+            log.error("[EXTRACT] Ambiente não configurado. Extração cancelada.")
             return None
 
-        # ── PASSO 2: Elemento 1 — botão "More Actions Menu" ───────────────
-        # Localiza pelo aria-label, clica para focar e pressiona ENTER 1x
-        # para abrir o menu de ações.
+        # ── PASSO 1: Aguarda a renderização da página ─────────────────────
+        if not aguardar_pagina_analytics(driver, wait):
+            return None
+
+        # ── PASSO 2: Botão "More Actions Menu" ───────────────────────────
         log.info('[2/4] Acionando botão "More Actions Menu"...')
         sucesso = clicar_elemento_com_enter(
             driver=driver,
@@ -314,26 +268,30 @@ def extrair_sequences_analytics(
             return None
 
         log.info('[2/4] ✅ Menu aberto.')
+        time.sleep(1)  # Aguarda animação do menu
 
-        # Aguarda o menu animar e os itens ficarem clicáveis
-        time.sleep(1)
-
-        # ── PASSO 3: Elemento 2 — opção "Export to CSV" ───────────────────
-        # Localiza o link pelo XPath (texto do span interno), pressiona
-        # ENTER 2 vezes para confirmar a exportação.
+        # ── PASSO 3: Opção "Export to CSV" ───────────────────────────────
+        # Para links <a> no Apollo, click() é mais confiável que focus()+ENTER
+        # para abrir o diálogo. Os send_keys(RETURN) confirmam a exportação.
         log.info('[3/4] Acionando "Export to CSV"...')
-        sucesso = clicar_elemento_com_enter(
-            driver=driver,
-            wait=wait,
-            seletor=XPATH_EXPORT_CSV,
-            tipo="xpath",
-            n_enters=2,
-            descricao="Export to CSV"
-        )
-        if not sucesso:
+        try:
+            btn_export = wait.until(
+                EC.element_to_be_clickable((By.XPATH, XPATH_EXPORT_CSV))
+            )
+            btn_export.click()
+            time.sleep(0.5)
+            btn_export.send_keys(Keys.RETURN)
+            time.sleep(0.5)
+            btn_export.send_keys(Keys.RETURN)
+            log.info('[3/4] ✅ Exportação acionada.')
+        except TimeoutException:
+            log.error(
+                '[3/4] ❌ Elemento "Export to CSV" não encontrado.\n'
+                f'      Seletor: {XPATH_EXPORT_CSV}\n'
+                '      Verifique se o menu abriu corretamente.'
+            )
+            driver.save_screenshot("erro_export_csv.png")
             return None
-
-        log.info('[3/4] ✅ Exportação acionada.')
 
         # ── PASSO 4: Aguarda o download completar ─────────────────────────
         log.info("[4/4] Aguardando arquivo CSV...")

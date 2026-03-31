@@ -74,6 +74,5 @@ if __name__ == "__main__":
         print("=" * 60)
         print("  Extração falhou.")
         print("  Verifique: apollo_sequences_extract.log")
-        print("  Screenshots: erro_*.png (se geradas)")
         print("=" * 60)
     print()
