@@ -1,0 +1,29 @@
+# Perfis de navegador (dados locais da VISU)
+profile_visu/
+
+.git
+
+# Logs
+*.log
+
+#Ambientes Virtuais
+.venv/
+venv/
+
+# Arquivos Python gerados automaticamente
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Arquivos temporários
+*.swp
+*.bak
+*.tmp
+*.~ 
+
+# Distribuição
+build/
+dist/
+*.egg-info/
+.eggs/

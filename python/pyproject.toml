@@ -1,0 +1,30 @@
+[project]
+name = "visu-apollo-extractor"
+version = "1.1.0"
+description = "Automação de extração de Sequences Analytics do Apollo.io — VISU Dados"
+requires-python = ">=3.11"
+dependencies = [
+    "selenium>=4.20.0",
+]
+
+# ─────────────────────────────────────────────────────────────────────────
+# NOTA — ChromeDriver:
+#   O chromedriver.exe local NÃO é mais necessário.
+#   O Selenium Manager (embutido no Selenium 4.6+) detecta automaticamente
+#   a versão do Chrome instalada na máquina e baixa o driver correto.
+#   O driver fica em cache em: %USERPROFILE%\.cache\selenium
+#
+#   Isso elimina definitivamente o erro:
+#   "This version of ChromeDriver only supports Chrome version X"
+# ─────────────────────────────────────────────────────────────────────────
+
+[tool.uv]
+# uv garante ambiente isolado e reproduzível por projeto.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["common*", "projects*"]
